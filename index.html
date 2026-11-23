@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Castle SFXR</title>
+<style>
+:root{color-scheme:dark;--bg:#000;--fg:#fff;--mut:#888;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html{scroll-padding-top:env(safe-area-inset-top,0px);background:var(--bg)}
+body{margin:0 auto;max-width:560px;padding:16px;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+h1{font-size:18px;margin:0 0 4px}.sub,.hint{color:var(--mut);font-size:13px}
+.cats{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:16px 0}
+button{font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--mut);border-radius:6px;padding:10px 4px;cursor:pointer}
+button.on{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+label{display:block;color:var(--mut);font-size:13px;margin-bottom:4px}
+.row{display:flex;gap:6px}.row input{flex:1;min-width:0}.row button{padding:0 10px}
+input[type=number]{width:100%;box-sizing:border-box;font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--mut);border-radius:6px;padding:9px}
+#play{width:100%;margin:16px 0 8px;background:var(--fg);color:var(--bg);font-weight:600;padding:14px}
+canvas{display:block;width:100%;height:96px;border:1px solid var(--mut);border-radius:6px}
+#info{margin:8px 0}
+</style></head><body>
+<h1>Castle SFXR</h1>
+<div class="sub">Generated-effect sounds from Castle’s inputs. Unverified against Castle audio.</div>
+<div class="cats" id="cats"></div>
+<div class="grid">
+<div><label>Coarse (seed)</label><div class="row"><input id="seed" type="number" value="1337"><button id="rs">rand</button></div></div>
+<div><label>Fine (mutation seed)</label><div class="row"><input id="fine" type="number" value="0"><button id="rf">rand</button></div></div>
+<div><label>Mutation amount</label><input id="amt" type="number" value="5" step="1"></div>
+<div><label>Rate</label><input id="rate" type="number" value="1" step="0.05" min="0.05"></div>
+<div><label>Amplitude</label><input id="amp" type="number" value="1" step="0.1" min="0"></div>
+<div><label>Pan</label><input id="pan" type="number" value="0" step="0.1" min="-1" max="1"></div>
+</div>
+<div style="margin-top:12px"><button id="force">Mutate even when fine = 0</button></div>
+<div class="hint" style="margin-top:6px">Fine = 0 skips mutation unless this is on. Castle’s real behavior is unknown.</div>
+<button id="play">Play</button>
+<canvas id="cv" width="1000" height="192"></canvas>
+<div id="info" class="hint"></div>
+<script>
+const SFXR=(function(){
+const M64=(1n<<64n)-1n, f64=new Float64Array(1), u64=new BigUint64Array(f64.buffer);
+const TW=[[63n,31n,18n],[58n,19n,28n],[55n,24n,7n],[47n,21n,8n]];
+const rng={u:[0n,0n,0n,0n],
+ next(){let r=0n;for(let i=0;i<4;i++){const[k,q,s]=TW[i];let z=this.u[i];
+  z=((((z<<q)&M64)^z)>>(k-s))^(((z&((M64<<(64n-k))&M64))<<s)&M64);r^=z;this.u[i]=z;}return r;},
+ seed(d){let r=0x11090601;for(let i=0;i<4;i++){const m=1n<<BigInt(r&255);r>>>=8;d=d*Math.PI+Math.E;f64[0]=d;let u=u64[0];if(u<m)u+=m;this.u[i]=u;}
+  for(let i=0;i<10;i++)this.next();},
+ random(){return Number(this.next()&0xfffffffffffffn)/4503599627370496;}};
+rng.seed(0); // LuaJIT default state is arbitrary; Castle seeds before every use
+const trunc=n=>n>=0?Math.floor(n):-Math.floor(-n);
+const setseed=s=>{rng.seed(s);for(let i=0;i<6;i++)rng.random();};
+const rnd=(lo,hi)=>lo+rng.random()*(hi-lo);
+const maybe=w=>trunc(rnd(0,w===undefined?1:w))===0;
+const clamp=(n,min,max)=>Math.max(min===undefined?-Infinity:min,Math.min(max===undefined?Infinity:max,n));
+const W={SQUARE:0,SAWTOOTH:1,SINE:2,NOISE:3};
+class Sound{
+ constructor(){this.supersampling=8;this.volume={master:0.5,sound:0.5};this.envelope={};this.frequency={};this.vibrato={};this.change={};this.duty={};this.phaser={};this.lowpass={};this.highpass={};this.reset();}
+ reset(){this.repeatspeed=0;this.waveform=0;
+  Object.assign(this.envelope,{attack:0,sustain:0.3,punch:0,decay:0.4});
+  Object.assign(this.frequency,{start:0.3,min:0,slide:0,dslide:0});
+  Object.assign(this.vibrato,{depth:0,speed:0,delay:0});
+  Object.assign(this.change,{amount:0,speed:0});
+  Object.assign(this.duty,{ratio:0,sweep:0});
+  Object.assign(this.phaser,{offset:0,sweep:0});
+  Object.assign(this.lowpass,{cutoff:1,sweep:0,resonance:0});
+  Object.assign(this.highpass,{cutoff:0,sweep:0});}
+ sanitize(){const c=clamp;this.repeatspeed=c(this.repeatspeed,0,1);this.waveform=c(this.waveform,0,3);
+  const e=this.envelope;e.attack=c(e.attack,0,1);e.sustain=c(e.sustain,0,1);e.punch=c(e.punch,0,1);e.decay=c(e.decay,0,1);
+  const f=this.frequency;f.start=c(f.start,0,1);f.min=c(f.min,0,1);f.slide=c(f.slide,-1,1);f.dslide=c(f.dslide,-1,1);
+  const v=this.vibrato;v.depth=c(v.depth,0,1);v.speed=c(v.speed,0,1);v.delay=c(v.delay,0,1);
+  const g=this.change;g.amount=c(g.amount,-1,1);g.speed=c(g.speed,0,1);
+  const d=this.duty;d.ratio=c(d.ratio,0,1);d.sweep=c(d.sweep,-1,1);
+  const p=this.phaser;p.offset=c(p.offset,-1,1);p.sweep=c(p.sweep,-1,1);
+  const l=this.lowpass;l.cutoff=c(l.cutoff,0,1);l.sweep=c(l.sweep,-1,1);l.resonance=c(l.resonance,0,1);
+  const h=this.highpass;h.cutoff=c(h.cutoff,0,1);h.sweep=c(h.sweep,-1,1);}
+ samples(){ // 44100 Hz, float; returns Float32Array
+  const out=[],self=this,fq=this.frequency;
+  const pb=new Array(1024).fill(0),nb=new Array(32);for(let i=0;i<32;i++)nb[i]=rnd(-1,1);
+  let fperiod,maxperiod,slide,dslide,sqd,sqs,chgmod,chgtime,chglimit;
+  const reset=()=>{fperiod=100/(fq.start**2+0.001);maxperiod=100/(fq.min**2+0.001);
+   slide=1-fq.slide**3*0.01;dslide=-(fq.dslide**3)*0.000001;sqd=0.5-this.duty.ratio*0.5;sqs=-this.duty.sweep*0.00005;
+   chgmod=this.change.amount>=0?1-this.change.amount**2*0.9:1+this.change.amount**2*10;chgtime=0;
+   chglimit=this.change.speed===1?0:trunc((1-this.change.speed)**2*20000+32);};
+  let phase=0;reset();let envvol=0,envstage=1,envtime=0;
+  const el=[this.envelope.attack**2*100000,this.envelope.sustain**2*100000,this.envelope.decay**2*100000];
+  let fphase=this.phaser.offset**2*1020;if(this.phaser.offset<0)fphase=-fphase;
+  let dphase=this.phaser.sweep**2;if(this.phaser.sweep<0)dphase=-dphase;
+  let ipp=0,iphase=Math.abs(trunc(fphase)),fltp=0,fltdp=0;
+  let fltw=this.lowpass.cutoff**3*0.1;const fltwd=1+this.lowpass.sweep*0.0001;
+  let fltdmp=clamp(5/(1+this.lowpass.resonance**2*20)*(0.01+fltw),undefined,0.8);
+  let fltphp=0,flthp=this.highpass.cutoff**2*0.1;const flthpd=1+this.highpass.sweep*0.0003;
+  let vibph=0;const vibsp=this.vibrato.speed**2*0.01,vibamp=this.vibrato.depth*0.5;
+  let reptime=0,replimit=trunc((1-this.repeatspeed)**2*20000+32);if(this.repeatspeed===0)replimit=0;
+  for(;;){
+   reptime++;if(replimit!==0&&reptime>=replimit){reptime=0;reset();}
+   chgtime++;if(chglimit!==0&&chgtime>=chglimit){chglimit=0;fperiod*=chgmod;}
+   slide+=dslide;fperiod*=slide;
+   if(fperiod>maxperiod){fperiod=maxperiod;if(fq.min>0)break;}
+   let rf=fperiod;if(vibamp>0){vibph+=vibsp;rf=fperiod*(1+Math.sin(vibph)*vibamp);}
+   let period=trunc(rf);if(period<8)period=8;
+   sqd=clamp(sqd+sqs,0,0.5);
+   envtime++;if(envtime>el[envstage-1]){envtime=0;envstage++;if(envstage===4)break;}
+   if(envstage===1)envvol=envtime/el[0];
+   else if(envstage===2)envvol=1+(1-envtime/el[1])*2*this.envelope.punch;
+   else envvol=1-envtime/el[2];
+   fphase+=dphase;iphase=clamp(Math.abs(trunc(fphase)),undefined,1023);
+   if(flthpd!==0)flthp=clamp(flthp*flthpd,0.00001,0.1);
+   let ss=0;
+   for(let si=0;si<this.supersampling;si++){
+    let s=0;phase++;
+    if(phase>=period){phase=phase%period;if(this.waveform===3)for(let i=0;i<32;i++)nb[i]=rnd(-1,1);}
+    const fp=phase/period;
+    if(this.waveform===0)s=fp<sqd?0.5:-0.5;
+    else if(this.waveform===1)s=1-fp*2;
+    else if(this.waveform===2)s=Math.sin(fp*2*Math.PI);
+    else s=nb[trunc(phase*32/period)%32];
+    const pp=fltp;fltw=clamp(fltw*fltwd,0,0.1);
+    if(this.lowpass.cutoff!==1){fltdp+=(s-fltp)*fltw;fltdp-=fltdp*fltdmp;}else{fltp=s;fltdp=0;}
+    fltp+=fltdp;fltphp+=fltp-pp;fltphp-=fltphp*flthp;s=fltphp;
+    pb[ipp&1023]=s;s+=pb[(ipp-iphase+1024)&1023];ipp=(ipp+1)&1023;
+    ss+=s*envvol;}
+   ss=(ss/this.supersampling)*this.volume.master;ss*=2*this.volume.sound;
+   out.push(clamp(ss,-1,1));}
+  return Float32Array.from(out);}
+ randomize(seed){if(seed!==undefined)setseed(seed);const w=this.waveform;this.reset();this.waveform=w;
+  if(maybe())this.repeatspeed=rnd(0,1);
+  if(maybe())this.frequency.start=rnd(-1,1)**3+0.5;else this.frequency.start=rnd(-1,1)**2;
+  this.frequency.slide=rnd(-1,1)**5;
+  if(this.frequency.start>0.7&&this.frequency.slide>0.2)this.frequency.slide=-this.frequency.slide;
+  else if(this.frequency.start<0.2&&this.frequency.slide<-0.05)this.frequency.slide=-this.frequency.slide;
+  this.frequency.dslide=rnd(-1,1)**3;this.duty.ratio=rnd(-1,1);this.duty.sweep=rnd(-1,1)**3;
+  this.vibrato.depth=rnd(-1,1)**3;this.vibrato.speed=rnd(-1,1);this.vibrato.delay=rnd(-1,1);
+  const e=this.envelope;e.attack=rnd(-1,1)**3;e.sustain=rnd(-1,1)**2;e.punch=rnd(-1,1)**2;e.decay=rnd(-1,1);
+  if(e.attack+e.sustain+e.decay<0.2){e.sustain=e.sustain+0.2+rnd(0,0.3);e.decay=e.decay+0.2+rnd(0,0.3);}
+  const l=this.lowpass;l.resonance=rnd(-1,1);l.cutoff=1-rnd(0,1)**3;l.sweep=rnd(-1,1)**3;
+  if(l.cutoff<0.1&&l.sweep<-0.05)l.sweep=-l.sweep;
+  this.highpass.cutoff=rnd(0,1)**3;this.highpass.sweep=rnd(-1,1)**5;
+  this.phaser.offset=rnd(-1,1)**3;this.phaser.sweep=rnd(-1,1)**3;
+  this.change.speed=rnd(-1,1);this.change.amount=rnd(-1,1);this.sanitize();}
+ mutate(amount,seed,changefreq){if(seed!==undefined)setseed(seed);amount=amount===undefined?1:amount;
+  const a=amount/20,b=(1-a)*10,m=(o,k)=>{if(maybe(b))o[k]=o[k]+rnd(-a,a);};
+  if(changefreq!==false){m(this.frequency,'start');m(this.frequency,'slide');m(this.frequency,'dslide');}
+  m(this.duty,'ratio');m(this.duty,'sweep');m(this.vibrato,'depth');m(this.vibrato,'speed');m(this.vibrato,'delay');
+  m(this.envelope,'attack');m(this.envelope,'sustain');m(this.envelope,'punch');m(this.envelope,'decay');
+  m(this.lowpass,'resonance');m(this.lowpass,'cutoff');m(this.lowpass,'sweep');m(this.highpass,'cutoff');m(this.highpass,'sweep');
+  m(this.phaser,'offset');m(this.phaser,'sweep');m(this.change,'speed');m(this.change,'amount');m(this,'repeatspeed');
+  this.sanitize();}
+
+ pickup(seed){if(seed!==undefined)setseed(seed);this.reset();this.frequency.start=rnd(0.4,0.9);this.envelope.attack=0;this.envelope.sustain=rnd(0,0.1);this.envelope.punch=rnd(0.3,0.6);this.envelope.decay=rnd(0.1,0.5);
+  if(maybe()){this.change.speed=rnd(0.5,0.7);this.change.amount=rnd(0.2,0.6);}}
+ laser(seed){if(seed!==undefined)setseed(seed);this.reset();this.waveform=trunc(rnd(0,3));
+  if(this.waveform===2&&maybe())this.waveform=trunc(rnd(0,1));
+  if(maybe(2)){this.frequency.start=rnd(0.3,0.9);this.frequency.min=rnd(0,0.1);this.frequency.slide=rnd(-0.65,-0.35);}
+  else{this.frequency.start=rnd(0.5,1);this.frequency.min=clamp(this.frequency.start-rnd(0.2,0.4),0.2);this.frequency.slide=rnd(-0.35,-0.15);}
+  if(maybe()){this.duty.ratio=rnd(0,0.5);this.duty.sweep=rnd(0,0.2);}else{this.duty.ratio=rnd(0.4,0.9);this.duty.sweep=rnd(-0.7,0);}
+  this.envelope.attack=0;this.envelope.sustain=rnd(0.1,0.3);this.envelope.decay=rnd(0,0.4);
+  if(maybe())this.envelope.punch=rnd(0,0.3);
+  if(maybe(2)){this.phaser.offset=rnd(0,0.2);this.phaser.sweep=rnd(-0.2,0);}
+  if(maybe())this.highpass.cutoff=rnd(0,0.3);}
+ explosion(seed){if(seed!==undefined)setseed(seed);this.reset();this.waveform=3;
+  if(maybe()){this.frequency.start=rnd(0.1,0.5);this.frequency.slide=rnd(-0.1,0.3);}else{this.frequency.start=rnd(0.2,0.9);this.frequency.slide=rnd(-0.2,-0.4);}
+  this.frequency.start=this.frequency.start**2;
+  if(maybe(4))this.frequency.slide=0;
+  if(maybe(2))this.repeatspeed=rnd(0.3,0.8);
+  this.envelope.attack=0;this.envelope.sustain=rnd(0.1,0.4);this.envelope.punch=rnd(0.2,0.8);this.envelope.decay=rnd(0,0.5);
+  if(maybe()){this.phaser.offset=rnd(-0.3,0.6);this.phaser.sweep=rnd(-0.3,0);}
+  if(maybe()){this.vibrato.depth=rnd(0,0.7);this.vibrato.speed=rnd(0,0.6);}
+  if(maybe(2)){this.change.speed=rnd(0.6,0.9);this.change.amount=rnd(-0.8,0.8);}}
+ powerup(seed){if(seed!==undefined)setseed(seed);this.reset();
+  if(maybe())this.waveform=1;else this.duty.ratio=rnd(0,0.6);
+  if(maybe()){this.frequency.start=rnd(0.2,0.5);this.frequency.slide=rnd(0.1,0.5);this.repeatspeed=rnd(0.4,0.8);}
+  else{this.frequency.start=rnd(0.2,0.5);this.frequency.slide=rnd(0.05,0.25);if(maybe()){this.vibrato.depth=rnd(0,0.7);this.vibrato.speed=rnd(0,0.6);}}
+  this.envelope.attack=0;this.envelope.sustain=rnd(0,0.4);this.envelope.decay=rnd(0.1,0.5);}
+ hit(seed){if(seed!==undefined)setseed(seed);this.reset();this.waveform=trunc(rnd(0,3));
+  if(this.waveform===2)this.waveform=3;else if(this.waveform===0)this.duty.ratio=rnd(0,0.6);
+  this.frequency.start=rnd(0.2,0.8);this.frequency.slide=rnd(-0.7,-0.3);
+  this.envelope.attack=0;this.envelope.sustain=rnd(0,0.1);this.envelope.decay=rnd(0.1,0.3);
+  if(maybe())this.highpass.cutoff=rnd(0,0.3);}
+ jump(seed){if(seed!==undefined)setseed(seed);this.reset();this.waveform=0;this.duty.value=rnd(0,0.6);
+  this.frequency.start=rnd(0.3,0.6);this.frequency.slide=rnd(0.1,0.3);
+  this.envelope.attack=0;this.envelope.sustain=rnd(0.1,0.4);this.envelope.decay=rnd(0.1,0.3);
+  if(maybe())this.highpass.cutoff=rnd(0,0.3);if(maybe())this.lowpass.cutoff=rnd(0.4,1);}
+ blip(seed){if(seed!==undefined)setseed(seed);this.reset();this.waveform=trunc(rnd(0,2));
+  if(this.waveform===0)this.duty.ratio=rnd(0,0.6);
+  this.frequency.start=rnd(0.2,0.6);this.envelope.attack=0;this.envelope.sustain=rnd(0.1,0.2);this.envelope.decay=rnd(0,0.2);this.highpass.cutoff=0.1;}
+}
+return {Sound,rng,setseed,CATEGORIES:['pickup','laser','explosion','powerup','hit','jump','blip','random'],
+ build(category,seed,mseed,mamount,doMutate){const s=new Sound();
+  if(category==='random')s.randomize(seed);else s[category](seed);
+  if(doMutate)s.mutate(mamount,mseed);return s;}};
+})();
+
+
+const $=id=>document.getElementById(id);
+let cat='pickup',ctx=null;
+const cats=$('cats');
+SFXR.CATEGORIES.forEach(c=>{const b=document.createElement('button');b.textContent=c;b.dataset.c=c;if(c===cat)b.className='on';
+ b.onclick=()=>{cat=c;[...cats.children].forEach(x=>x.className=x.dataset.c===c?'on':'');play();};cats.appendChild(b);});
+const num=(id,d)=>{const v=parseFloat($(id).value);return isFinite(v)?v:d;};
+function render(){const seed=num('seed',0),ms=num('fine',0),force=$('force').classList.contains('on');
+ return SFXR.build(cat,seed,ms,num('amt',5),ms!==0||force).samples();}
+function draw(a){const cv=$('cv'),g=cv.getContext('2d'),w=cv.width,h=cv.height;g.fillStyle='#000';g.fillRect(0,0,w,h);
+ g.strokeStyle='#888';g.beginPath();g.moveTo(0,h/2);g.lineTo(w,h/2);g.stroke();
+ if(!a.length)return;g.strokeStyle='#fff';g.beginPath();const step=a.length/w;
+ for(let x=0;x<w;x++){let mn=1,mx=-1;for(let i=Math.floor(x*step),e=Math.min(a.length,Math.floor((x+1)*step)+1);i<e;i++){const v=a[i];if(v<mn)mn=v;if(v>mx)mx=v;}
+  g.moveTo(x+.5,h/2-mx*h/2);g.lineTo(x+.5,h/2-mn*h/2);}g.stroke();}
+function play(){const a=render(),rate=Math.max(0.05,num('rate',1));draw(a);
+ $('info').textContent=a.length?a.length+' samples · '+(a.length/44100/rate).toFixed(2)+' s':'No audio generated for these inputs.';
+ if(!a.length)return;
+ ctx=ctx||new (window.AudioContext||window.webkitAudioContext)({sampleRate:44100});if(ctx.state==='suspended')ctx.resume();
+ const buf=ctx.createBuffer(1,a.length,44100);buf.copyToChannel(a,0);
+ const src=ctx.createBufferSource();src.buffer=buf;src.playbackRate.value=rate;
+ const gn=ctx.createGain();gn.gain.value=Math.max(0,num('amp',1));
+ const pn=ctx.createStereoPanner();pn.pan.value=Math.max(-1,Math.min(1,num('pan',0)));
+ src.connect(gn).connect(pn).connect(ctx.destination);src.start();}
+$('play').onclick=play;
+$('rs').onclick=()=>{$('seed').value=Math.floor(Math.random()*10000);play();};
+$('rf').onclick=()=>{$('fine').value=Math.floor(Math.random()*10000);play();};
+$('force').onclick=e=>{e.target.classList.toggle('on');};
+document.addEventListener('keydown',e=>{if(e.key==='Enter')play();});
+draw(render());
+</script></body></html>
