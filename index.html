@@ -10,7 +10,7 @@ h1{font-size:18px;margin:0 0 4px}.sub,.hint{color:var(--mut);font-size:13px}
 .cats{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:16px 0}
 button{font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--mut);border-radius:6px;padding:10px 4px;cursor:pointer}
 button.on{background:var(--fg);color:var(--bg);border-color:var(--fg)}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.grid{display:grid;gap:12px}
 label{display:block;color:var(--mut);font-size:13px;margin-bottom:4px}
 .row{display:flex;gap:6px}.row input{flex:1;min-width:0}.row button{padding:0 10px}
 input[type=number]{width:100%;box-sizing:border-box;font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--mut);border-radius:6px;padding:9px}
@@ -18,17 +18,14 @@ input[type=number]{width:100%;box-sizing:border-box;font:inherit;background:var(
 canvas{display:block;width:100%;height:96px;border:1px solid var(--mut);border-radius:6px}
 #info{margin:8px 0}
 </style></head><body>
-<h1>Castle SFXR</h1>
 <div class="cats" id="cats"></div>
 <div class="grid">
-<div><label>Coarse (seed)</label><div class="row"><input id="seed" type="number" value="1337"><button id="rs">rand</button></div></div>
-<div><label>Fine (mutation seed)</label><div class="row"><input id="fine" type="number" value="0"><button id="rf">rand</button></div></div>
-<div><label>Mutation amount</label><input id="amt" type="number" value="5" step="1"></div>
+<div><label>Coarse</label><div class="row"><input id="seed" type="number" value="1337"><button id="rs">random</button></div></div>
+<div><label>Fine</label><div class="row"><input id="fine" type="number" value="0"><button id="rf">random</button></div></div>
 <div><label>Rate</label><input id="rate" type="number" value="1" step="0.05" min="0.05"></div>
 <div><label>Amplitude</label><input id="amp" type="number" value="1" step="0.1" min="0"></div>
 <div><label>Pan</label><input id="pan" type="number" value="0" step="0.1" min="-1" max="1"></div>
 </div>
-<div style="margin-top:12px"><button id="force">Mutate even when fine = 0</button></div>
 <button id="play">Play</button>
 <canvas id="cv" width="1000" height="192"></canvas>
 <div id="info" class="hint"></div>
@@ -42,7 +39,7 @@ const rng={u:[0n,0n,0n,0n],
  seed(d){let r=0x11090601;for(let i=0;i<4;i++){const m=1n<<BigInt(r&255);r>>>=8;d=d*Math.PI+Math.E;f64[0]=d;let u=u64[0];if(u<m)u+=m;this.u[i]=u;}
   for(let i=0;i<10;i++)this.next();},
  random(){return Number(this.next()&0xfffffffffffffn)/4503599627370496;}};
-rng.seed(0); // LuaJIT default state is arbitrary; Castle seeds before every use
+rng.seed(0);
 const trunc=n=>n>=0?Math.floor(n):-Math.floor(-n);
 const setseed=s=>{rng.seed(s);for(let i=0;i<6;i++)rng.random();};
 const rnd=(lo,hi)=>lo+rng.random()*(hi-lo);
@@ -193,8 +190,8 @@ const cats=$('cats');
 SFXR.CATEGORIES.forEach(c=>{const b=document.createElement('button');b.textContent=c;b.dataset.c=c;if(c===cat)b.className='on';
  b.onclick=()=>{cat=c;[...cats.children].forEach(x=>x.className=x.dataset.c===c?'on':'');play();};cats.appendChild(b);});
 const num=(id,d)=>{const v=parseFloat($(id).value);return isFinite(v)?v:d;};
-function render(){const seed=num('seed',0),ms=num('fine',0),force=$('force').classList.contains('on');
- return SFXR.build(cat,seed,ms,num('amt',5),ms!==0||force).samples();}
+function render(){const seed=num('seed',0),ms=num('fine',0);
+ return SFXR.build(cat,seed,ms,ms!==0).samples();}
 function draw(a){const cv=$('cv'),g=cv.getContext('2d'),w=cv.width,h=cv.height;g.fillStyle='#000';g.fillRect(0,0,w,h);
  g.strokeStyle='#888';g.beginPath();g.moveTo(0,h/2);g.lineTo(w,h/2);g.stroke();
  if(!a.length)return;g.strokeStyle='#fff';g.beginPath();const step=a.length/w;
@@ -212,7 +209,6 @@ function play(){const a=render(),rate=Math.max(0.05,num('rate',1));draw(a);
 $('play').onclick=play;
 $('rs').onclick=()=>{$('seed').value=Math.floor(Math.random()*10000);play();};
 $('rf').onclick=()=>{$('fine').value=Math.floor(Math.random()*10000);play();};
-$('force').onclick=e=>{e.target.classList.toggle('on');};
 document.addEventListener('keydown',e=>{if(e.key==='Enter')play();});
 draw(render());
 </script></body></html>
