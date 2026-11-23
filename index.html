@@ -190,8 +190,8 @@ const cats=$('cats');
 SFXR.CATEGORIES.forEach(c=>{const b=document.createElement('button');b.textContent=c;b.dataset.c=c;if(c===cat)b.className='on';
  b.onclick=()=>{cat=c;[...cats.children].forEach(x=>x.className=x.dataset.c===c?'on':'');play();};cats.appendChild(b);});
 const num=(id,d)=>{const v=parseFloat($(id).value);return isFinite(v)?v:d;};
-function render(){const seed=num('seed',0),ms=num('fine',0);
- return SFXR.build(cat,seed,ms,ms!==0).samples();}
+function render(){const seed = num('seed', 0), ms = num('fine', 0);
+  return SFXR.build(cat, seed, ms, 1, ms !== 0).samples();}
 function draw(a){const cv=$('cv'),g=cv.getContext('2d'),w=cv.width,h=cv.height;g.fillStyle='#000';g.fillRect(0,0,w,h);
  g.strokeStyle='#888';g.beginPath();g.moveTo(0,h/2);g.lineTo(w,h/2);g.stroke();
  if(!a.length)return;g.strokeStyle='#fff';g.beginPath();const step=a.length/w;
